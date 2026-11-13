@@ -159,6 +159,11 @@ void audio_recording_thread(void *p1, void *p2, void *p3);
  */
 int audio_get_energy_level(void);
 
+/* Game capture owns the same DMIC as recording. PCM is never retained. */
+int audio_game_start(void);
+void audio_game_stop(void);
+bool audio_game_take_jump(void);
+
 /**
  * @brief Add a bookmark at current recording position
  *

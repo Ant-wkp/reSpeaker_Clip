@@ -13,6 +13,7 @@
 #include "button.h"
 #include "clip_event.h"
 #include "haptic.h"
+#include "display.h"
 
 LOG_MODULE_REGISTER(button, CONFIG_CLIP_LOG_LEVEL);
 
@@ -75,7 +76,9 @@ static void button_event_callback(const struct device *dev, enum button_action a
 
     switch (action) {
     case BUTTON_SINGLE_CLICK:
-        if (state == CLIP_STATE_RECORDING || state == CLIP_STATE_PAUSED) {
+        if (clip_game_active()) {
+            display_post_event(UI_EVENT_GAME_CLICK);
+        } else if (state == CLIP_STATE_RECORDING || state == CLIP_STATE_PAUSED) {
             clip_post_event(CLIP_EVENT_MARK);  /* MARK event handler vibrates */
         } else if (state == CLIP_STATE_IDLE || state == CLIP_STATE_ERROR
                    || state == CLIP_STATE_WIFI_SYNC) {
@@ -98,8 +101,8 @@ static void button_event_callback(const struct device *dev, enum button_action a
 		 */
 		clip_post_event(CLIP_EVENT_STOP);  /* STOP handler vibrates */
 		atomic_set(&recording_stopped, 1);
-	} else if (state == CLIP_STATE_IDLE || state == CLIP_STATE_ERROR
-		   || state == CLIP_STATE_WIFI_SYNC) {
+	} else if (!clip_game_active() && (state == CLIP_STATE_IDLE ||
+		   state == CLIP_STATE_ERROR || state == CLIP_STATE_WIFI_SYNC)) {
 		/* Vibrate to confirm long-press threshold.
 		 * Actual start deferred to RELEASE.
 		 */
@@ -143,6 +146,7 @@ static void button_event_callback(const struct device *dev, enum button_action a
 	break;
 
     case BUTTON_DOUBLE_CLICK:
+        clip_post_event(CLIP_EVENT_GAME_TOGGLE);
         break;
 
     default:

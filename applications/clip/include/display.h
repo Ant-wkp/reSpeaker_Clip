@@ -41,6 +41,7 @@ enum ui_state {
 	UI_STATE_LOW_BATTERY,          /**< Low battery warning */
 	UI_STATE_WIFI_BLOCKED,         /**< WiFi active, cannot record */
 	UI_STATE_USB_BLOCKED,          /**< USB MSC active, cannot record */
+	UI_STATE_DINO_GAME,
 };
 
 /* =============================================================================
@@ -75,6 +76,9 @@ enum ui_event {
 	UI_EVENT_WIFI_BLOCKED,         /**< WiFi active, cannot record */
 	UI_EVENT_USB_BLOCKED,          /**< USB MSC active, cannot record */
 	UI_EVENT_ANIM_TICK,            /**< Animation frame tick (internal) */
+	UI_EVENT_GAME_START,
+	UI_EVENT_GAME_EXIT,
+	UI_EVENT_GAME_CLICK,
 };
 
 /* =============================================================================
@@ -115,6 +119,7 @@ enum ui_state display_get_state(void);
  * @return true if display device is ready
  */
 bool display_is_ready(void);
+bool display_game_ready(void);
 
 /**
  * @brief Post event to UI queue

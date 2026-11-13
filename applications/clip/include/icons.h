@@ -14,13 +14,13 @@
  * @brief Icon library for CLIP display
  *
  * Icons are stored as const bitmap data in Flash (ROM), not RAM.
- * Format: 16x16 pixels, row-major order, 1 bit per pixel
- * Each row uses 2 bytes (16 bits = 16 pixels)
+ * Format: column-major order, 1 bit per pixel, most significant bit first.
+ * Each column uses (height + 7) / 8 bytes.
  */
 
 #define ICON_WIDTH  24
 #define ICON_HEIGHT 24
-#define ICON_SIZE_BYTES 72  /* 24 rows * 3 bytes per row */
+#define ICON_SIZE_BYTES 72  /* 24 columns * 3 bytes per column */
 
 /**
  * @brief Icon identifiers
@@ -50,25 +50,26 @@ typedef enum {
 	ICON_DISCONNECT_NOT_TRANSFORM, /**< Disconnect not transfer icon */
 	ICON_OTA,                 /**< OTA upgrade icon */
 	ICON_POWER,               /**< Power button icon */
+	ICON_DINO,                /**< Chromium T-Rex standing icon */
 } icon_id_t;
 
 /**
  * @brief Get icon bitmap data by ID
  *
  * @param id Icon identifier
- * @param width Output: icon width in pixels (always 16)
- * @param height Output: icon height in pixels (always 16)
+ * @param width Output: icon width in pixels
+ * @param height Output: icon height in pixels
  * @return Pointer to icon bitmap data, or NULL if not found
  */
 const uint8_t* icon_get_bitmap(icon_id_t id, uint8_t *width, uint8_t *height);
 
 /**
- * @brief Draw 16x16 bitmap icon to buffer
+ * @brief Draw bitmap icon to buffer
  *
  * @param buf Frame buffer
  * @param x X position
  * @param y Y position
- * @param bitmap Icon bitmap data (32 bytes for 16x16)
+ * @param bitmap Icon bitmap data in column-major format
  * @param width Icon width in pixels
  * @param height Icon height in pixels
  */

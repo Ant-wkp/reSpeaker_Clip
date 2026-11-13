@@ -33,6 +33,9 @@ enum clip_event {
     CLIP_EVENT_USB_CONNECTED,
     CLIP_EVENT_OTA_START,
     CLIP_EVENT_OTA_DONE,
+    CLIP_EVENT_GAME_TOGGLE,
+    CLIP_EVENT_GAME_RESTART,
+    CLIP_EVENT_GAME_EXIT,
     CLIP_EVENT_COUNT,
 };
 
@@ -69,6 +72,8 @@ int clip_post_event_sync(enum clip_event event,
  * @brief Get current device state (thread-safe)
  */
 enum clip_state clip_event_get_state(void);
+bool clip_game_active(void);
+void clip_game_exit(void);
 
 /**
  * @brief True while an MCUmgr DFU upload is in progress.
