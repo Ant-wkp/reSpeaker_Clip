@@ -916,8 +916,16 @@ static void set_ui_state(enum ui_state new_state)
 #define GAME_DINO_H 15
 #define GAME_CACTUS_W 8
 #define GAME_CACTUS_H 12
-#define GAME_UNITS_PER_PIXEL 50
+#define GAME_CACTUS_PAIR_SPACING 12
+#define GAME_UNITS_PER_PIXEL 100
+#define GAME_ACCELERATION_SCORE 5
 #define GAME_MAX_DIFFICULTY 100
+#define GAME_SPEED_START 40
+#define GAME_SPEED_AFTER_RAMP 72
+#define GAME_SPEED_STEP 5
+#define GAME_SPEED_STEP_SCORE 3
+#define GAME_SPEED_CAP_SCORE 50
+#define GAME_MIN_GAP_STEPS 16
 #define GAME_CACTUS_OFFSCREEN (-GAME_CACTUS_W * GAME_UNITS_PER_PIXEL)
 
 static const uint8_t game_dino[] = {
@@ -929,33 +937,68 @@ static const uint8_t game_cactus[] = {
 	0x1c, 0x00, 0x04, 0x00, 0x04, 0x00, 0xff, 0xf0,
 	0xff, 0xf0, 0x08, 0x00, 0x08, 0x00, 0x38, 0x00,
 };
-/* 18 fixed steps, with a 20 px apex. Index zero is grounded. */
+/* 750 ms between jumps at 50 ms per step. Index zero is grounded. */
 static const uint8_t game_jump_height[] = {
-	0, 4, 8, 11, 14, 16, 18, 19, 20, 20, 20, 19, 18, 16, 14, 11, 8, 4
+	0, 4, 8, 11, 15, 18, 19, 20, 20, 19, 18, 15, 11, 8, 4
 };
 static uint32_t game_next_tick;
 static uint16_t game_score;
-static int16_t game_cactus_positions[2];
+/* Two groups of up to two cacti can overlap within the visible field. */
+static int16_t game_cactus_positions[4];
+static bool game_cactus_scores[ARRAY_SIZE(game_cactus_positions)];
 static int16_t game_spawn_distance;
 static uint8_t game_jump_frame;
 static bool game_over;
 static bool game_needs_draw;
 
+/* Use a steep opening ramp followed by a gentler increase to the cap. */
+static int game_difficulty_value(int start, int early, int cap)
+{
+	int score = MIN(game_score, GAME_MAX_DIFFICULTY);
+	if (score <= GAME_ACCELERATION_SCORE) {
+		return start + (early - start) * score / GAME_ACCELERATION_SCORE;
+	}
+	return early + (cap - early) * (score - GAME_ACCELERATION_SCORE) /
+		       (GAME_MAX_DIFFICULTY - GAME_ACCELERATION_SCORE);
+}
+
+static int game_cactus_step(void)
+{
+	/* At 50 ms per update, 100 units per pixel represent each speed exactly. */
+	const int units_per_step = GAME_UNITS_PER_PIXEL * GAME_STEP_MS / 1000;
+	if (game_score <= GAME_ACCELERATION_SCORE) {
+		int ramp = (GAME_SPEED_AFTER_RAMP - GAME_SPEED_START) * units_per_step;
+		return GAME_SPEED_START * units_per_step +
+		       ramp * game_score / GAME_ACCELERATION_SCORE;
+	}
+
+	int score = MIN(game_score, GAME_SPEED_CAP_SCORE);
+	int increments = (score - GAME_ACCELERATION_SCORE) / GAME_SPEED_STEP_SCORE;
+	int speed = GAME_SPEED_AFTER_RAMP + increments * GAME_SPEED_STEP;
+	return speed * units_per_step;
+}
+
 static int game_random_gap(void)
 {
-	int difficulty = MIN(game_score, GAME_MAX_DIFFICULTY);
+	int center = game_difficulty_value(104 * GAME_UNITS_PER_PIXEL,
+					   80 * GAME_UNITS_PER_PIXEL, 76 * GAME_UNITS_PER_PIXEL);
+	int radius = game_difficulty_value(8, 4, 4);
+	uint32_t choices = 2 * radius + 1;
+	uint32_t limit = UINT32_MAX - UINT32_MAX % choices;
 	uint32_t random;
-	/* UINT32_MAX is divisible by 17. Reject it for equal odds per offset. */
 	do {
 		random = sys_rand32_get();
-	} while (random == UINT32_MAX);
-	int offset = (int)(random % 17) - 8;
-	return (104 + offset) * GAME_UNITS_PER_PIXEL - 8 * difficulty;
+	} while (random >= limit);
+
+	/* Leave time to land and start the next jump, even at full speed. */
+	int min_gap = MAX(center - radius * GAME_UNITS_PER_PIXEL,
+			  game_cactus_step() * GAME_MIN_GAP_STEPS);
+	return min_gap + (int)(random % choices) * GAME_UNITS_PER_PIXEL;
 }
 
 static bool advance_game_cacti(void)
 {
-	int step = 100 + MIN(game_score, GAME_MAX_DIFFICULTY);
+	int step = game_cactus_step();
 	int old_positions[ARRAY_SIZE(game_cactus_positions)];
 	for (size_t i = 0; i < ARRAY_SIZE(game_cactus_positions); i++) {
 		int old_x = game_cactus_positions[i];
@@ -981,25 +1024,32 @@ static bool advance_game_cacti(void)
 
 	int score_line = (GAME_DINO_X - GAME_CACTUS_W) * GAME_UNITS_PER_PIXEL;
 	for (size_t i = 0; i < ARRAY_SIZE(game_cactus_positions); i++) {
-		if (old_positions[i] > score_line && game_cactus_positions[i] <= score_line &&
-		    game_score < UINT16_MAX) {
+		if (game_cactus_scores[i] && old_positions[i] > score_line &&
+		    game_cactus_positions[i] <= score_line && game_score < UINT16_MAX) {
 			game_score++;
 		}
 	}
 
 	game_spawn_distance -= step;
 	if (game_spawn_distance <= 0) {
-		/* At the minimum 80 px spacing, two slots cover the 96 px span
-		 * from a cactus entering to one leaving the screen.
-		 */
+		/* A close pair fits within the clearance window of one jump. */
+		bool pair = game_score >= GAME_ACCELERATION_SCORE &&
+			    (sys_rand32_get() & 3U) < (game_score >= 50 ? 3U : 2U);
+		int x = OLED_WIDTH * GAME_UNITS_PER_PIXEL + game_spawn_distance;
 		for (size_t i = 0; i < ARRAY_SIZE(game_cactus_positions); i++) {
-			if (game_cactus_positions[i] == GAME_CACTUS_OFFSCREEN) {
-				game_cactus_positions[i] = OLED_WIDTH * GAME_UNITS_PER_PIXEL +
-							  game_spawn_distance;
-				game_spawn_distance += game_random_gap();
+			if (game_cactus_positions[i] != GAME_CACTUS_OFFSCREEN) {
+				continue;
+			}
+			game_cactus_positions[i] = x;
+			/* Only the last cactus in the group awards its point. */
+			game_cactus_scores[i] = !pair;
+			if (!pair) {
 				break;
 			}
+			x += GAME_CACTUS_PAIR_SPACING * GAME_UNITS_PER_PIXEL;
+			pair = false;
 		}
+		game_spawn_distance += game_random_gap();
 	}
 	return true;
 }
@@ -1009,7 +1059,10 @@ static void start_game_page(void)
 	k_work_cancel_delayable(&display_timeout_work);
 	game_score = 0;
 	game_cactus_positions[0] = OLED_WIDTH * GAME_UNITS_PER_PIXEL;
-	game_cactus_positions[1] = GAME_CACTUS_OFFSCREEN;
+	game_cactus_scores[0] = true;
+	for (size_t i = 1; i < ARRAY_SIZE(game_cactus_positions); i++) {
+		game_cactus_positions[i] = GAME_CACTUS_OFFSCREEN;
+	}
 	game_spawn_distance = game_random_gap();
 	game_jump_frame = 0;
 	game_over = false;
