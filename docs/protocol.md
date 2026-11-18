@@ -527,8 +527,8 @@ AT+START=normal
 **Parameters:**
 - `mode`: "normal", "enhanced", or "rtc" (legacy alias: "merge" = enhanced; case-insensitive). Omitted → current mode.
   `rtc` starts a live stream instead of an SD recording — BLE only, with the
-  File Data characteristic subscribed (Section 4.8). The button cannot start
-  RTC; a button hold-release always starts the SD pipeline.
+  File Data characteristic subscribed (Section 4.8). A double-click also
+  starts RTC from idle. Button hold-release starts SD recording.
 
 **Response:**
 ```json
@@ -2032,7 +2032,7 @@ small bounded queue of encoded frames and drops the oldest ones when the
 consumer is absent or too slow.
 
 **Preconditions:** BLE connected **and** the File Data characteristic CCCD
-subscribed (notify enabled) before `AT+START=RTC`.
+subscribed (notify enabled) before starting RTC.
 
 **Flow:**
 1. Client connects and subscribes to File Data notifications
@@ -2042,14 +2042,19 @@ subscribed (notify enabled) before `AT+START=RTC`.
 3. `AT+DOWNLOAD=<session_id>` → device **discards** whatever was queued
    before this point (RTC delivers "now" — pre-DOWNLOAD audio is never
    sent), sends `STREAM_START`, then `STREAM_DATA` frames in real time
-4. `AT+STOP` → `STREAM_END` (reason 0), session torn down
+4. `AT+STOP` or a button double-click → `STREAM_END` (reason 0), session torn down
+
+A double-click while idle can replace step 2. The client gets the session ID
+from the existing `state` event with state `STREAMING` and sends
+`AT+DOWNLOAD=<session_id>` within the same timeout. Double-click during SD
+recording has no action.
 
 **Pause/resume:** `AT+PAUSE` discards all buffered data and stops emission
 (the mic pipeline keeps running); `AT+RESUME` continues from the current
 frame. `AT+MARK` is rejected in RTC mode.
 
 **Automatic teardown:** the session aborts itself (event `rtc`/`timeout`) if
-`AT+DOWNLOAD` does not arrive within 5 s of `AT+START=RTC`, or immediately on
+`AT+DOWNLOAD` does not arrive within 5 s of session start, or immediately on
 BLE disconnect.
 
 **Notes:**
@@ -2144,7 +2149,7 @@ BLE disconnect.
 ```
 
 **Transitions:**
-- IDLE → RECORDING: `AT+START` (SD or RTC) or a button hold-release (SD only — RTC is AT-only)
+- IDLE → RECORDING: `AT+START` (SD or RTC), button hold-release (SD), or button double-click (RTC)
 - RECORDING → IDLE: Long button press OR `AT+STOP`
 
 **Recording-Specific Actions:**
@@ -2376,13 +2381,13 @@ Sent when recording state changes (start, stop, pause, resume). Uses `"event":"s
 ```
 
 **Trigger:** Persistent recording starts with `AT+START` or a button
-hold-release; RTC streaming starts with `AT+START=rtc` (AT only).
+hold-release. An RTC session starts with `AT+START=rtc` or a double-click from idle.
 
 ```json
 {"event":"state","state":"IDLE","session":"20240203100000","duration":600}
 ```
 
-**Trigger:** Recording stops (AT+STOP or button long press). `duration` is in seconds.
+**Trigger:** Recording stops (AT+STOP, button long press, or double-click during RTC). `duration` is in seconds.
 
 ```json
 {"event":"state","state":"PAUSED","session":"20240203100000"}
@@ -2913,7 +2918,7 @@ The device has a single user button (GPIO1.15, active-low) with multi-level pres
 | Long Press | Hold > 1s | Start/stop recording, confirm with vibration |
 | Long Press Level 1/2/3 | Continue holding > 2s/3s/4s | Power off screen (cancel on release) |
 | Release | Button released | Execute deferred action or power off |
-| Double Click | Two quick presses | Reserved (no action) |
+| Double Click | Two quick presses | Start RTC while idle with BLE File Data notify enabled, or stop the current RTC session |
 
 ### E.2 Single Click Behavior
 

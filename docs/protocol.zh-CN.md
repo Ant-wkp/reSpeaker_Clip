@@ -490,7 +490,7 @@ AT+START=normal
 
 **参数：**
 - `mode`："normal"、"enhanced" 或 "rtc"（旧别名："merge" = enhanced；不区分大小写）。省略 → 当前模式。
-  `rtc` 启动实时流而非 SD 录音 —— 仅限 BLE，且要求文件数据特征值已订阅（见 4.8 节）。按键无法启动 RTC；按键长按松开永远走 SD 管线。
+  `rtc` 启动实时流而非 SD 录音 —— 仅限 BLE，且要求文件数据特征值已订阅（见 4.8 节）。空闲时双击也可启动 RTC；长按松开启动 SD 录音。
 
 **响应：**
 ```json
@@ -1866,17 +1866,19 @@ AT+DOWNLOAD=20260326120000:0016.opus
 
 RTC 模式经 BLE 实时流式传输麦克风音频，不在 SD 卡写任何内容。它以低延迟优先于完整性：设备只保留一个小的有界编码帧队列，消费端缺席或太慢时丢弃最旧帧。
 
-**前置条件：** BLE 已连接**且**文件数据特征值 CCCD 已订阅（notify 开启），然后才 `AT+START=RTC`。
+**前置条件：** BLE 已连接**且**文件数据特征值 CCCD 已订阅（notify 开启），然后才启动 RTC。
 
 **流程：**
 1. 客户端连接并订阅文件数据通知
 2. `AT+START=RTC` → 响应带会话 ID，麦克风管线启动（设备状态广播 `"STREAMING"`）。帧立即编码但只进缓冲（有界、丢最旧）
 3. `AT+DOWNLOAD=<session_id>` → 设备**丢弃**此前排队的全部数据（RTC 只交付"现在" —— DOWNLOAD 之前的音频永不发送），发送 `STREAM_START`，之后实时发送 `STREAM_DATA`
-4. `AT+STOP` → `STREAM_END`（reason 0），会话拆卸
+4. `AT+STOP` 或双击按键 → `STREAM_END`（原因 0），会话结束
+
+空闲时双击可替代第 2 步。客户端从已有的 `STREAMING` 状态通知取得会话 ID，并在同一超时窗口内发送 `AT+DOWNLOAD=<session_id>`。SD 录音期间双击不执行操作。
 
 **暂停/恢复：** `AT+PAUSE` 丢弃全部缓冲数据并停止发送（麦克风管线继续跑）；`AT+RESUME` 从当前帧继续。RTC 模式拒绝 `AT+MARK`。
 
-**自动拆卸：** `AT+START=RTC` 后 5 秒内未收到 `AT+DOWNLOAD`（事件 `rtc`/`timeout`），或 BLE 断连时立即，会话自行中止。
+**自动拆卸：** RTC 会话启动后 5 秒内未收到 `AT+DOWNLOAD`（事件 `rtc`/`timeout`），或 BLE 断连时立即，会话自行中止。
 
 **说明：**
 - RTC 会话从不出现在 `AT+LIST`（无存储）
@@ -1906,7 +1908,7 @@ RTC 模式经 BLE 实时流式传输麦克风音频，不在 SD 卡写任何内�
 ### 5.2 录音状态机
 
 **迁移：**
-- IDLE → RECORDING：`AT+START`（SD 或 RTC）或按键长按松开（仅 SD —— RTC 只能 AT）
+- IDLE → RECORDING：`AT+START`（SD 或 RTC）、长按松开（SD）或双击（RTC）
 - RECORDING → IDLE：长按按键 或 `AT+STOP`
 
 **录音专属动作：**
@@ -2050,13 +2052,13 @@ RTC 模式经 BLE 实时流式传输麦克风音频，不在 SD 卡写任何内�
 {"event":"state","state":"RECORDING","session":"20240203100000"}
 ```
 
-**触发：** 持久录音由 `AT+START` 或按键长按松开开始；RTC 流由 `AT+START=rtc` 开始（仅 AT）。
+**触发：** 持久录音由 `AT+START` 或按键长按松开开始；RTC 会话由 `AT+START=rtc` 或空闲时双击开始。
 
 ```json
 {"event":"state","state":"IDLE","session":"20240203100000","duration":600}
 ```
 
-**触发：** 录音停止（AT+STOP 或长按）。`duration` 单位秒。
+**触发：** 录音停止（AT+STOP、长按或 RTC 会话期间双击）。`duration` 单位秒。
 
 ```json
 {"event":"state","state":"PAUSED","session":"20240203100000"}
@@ -2564,7 +2566,7 @@ FILE_START、FILE_END、TRANSFER_DONE 帧与 BLE 相同（见 4.3 节）。
 | 长按 | 按住 > 1s | 开始/停止录音，震动确认 |
 | 长按 Level 1/2/3 | 继续按住 > 2s/3s/4s | 关机画面（松开取消） |
 | 释放 | 按键释放 | 执行延迟动作或关机 |
-| 双击 | 快按两下 | 保留（无动作） |
+| 双击 | 快按两下 | 空闲且 BLE 文件数据通知已开启时启动 RTC，或结束当前 RTC 会话 |
 
 ### E.2 单击行为
 

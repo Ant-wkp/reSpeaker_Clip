@@ -666,7 +666,9 @@ the gauge to 0% while the cell still held charge.
 | Single click | RECORDING / PAUSED | `CLIP_EVENT_MARK` (bookmark) |
 | Single click | IDLE / ERROR / WIFI_SYNC | `CLIP_EVENT_STATUS_SHOW` |
 | Long press | RECORDING | `CLIP_EVENT_STOP` |
-| Long press + release | IDLE | RTC-marked `CLIP_EVENT_START` (requires BLE File Data notify) |
+| Long press + release | IDLE | `CLIP_EVENT_START` (SD recording) |
+| Double click | IDLE | `CLIP_EVENT_RTC_TOGGLE` → RTC `START` with BLE File Data notify enabled |
+| Double click | Active RTC | `CLIP_EVENT_RTC_TOGGLE` → `STOP` |
 | Long press level 1/2/3 | Any | `CLIP_EVENT_POWER_OFF_SHOW` |
 | Release (after power-off show) | Any | `CLIP_EVENT_POWER_OFF_EXEC` |
 

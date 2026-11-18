@@ -48,6 +48,7 @@ LOG_MODULE_REGISTER(clip_event, LOG_LEVEL_WRN); /* chatty event-flow logs */
 
 /*
  * transition_table[current_state][event] = next_state
+ * RTC_TOGGLE is resolved to START or STOP before this lookup.
  *
  *                  START  STOP   PAUSE  RESUME MARK   WIFI_ON WIFI_OFF POFF_S POFF_E STATUS USB   OTA_S OTA_D
  */
@@ -631,6 +632,32 @@ void clip_event_process(void)
         if (item.event >= CLIP_EVENT_COUNT) {
             LOG_WRN("Invalid event: %d", item.event);
             goto notify;
+        }
+
+        /* Decide the gesture in queue order, after earlier AT and button events. */
+        if (item.event == CLIP_EVENT_RTC_TOGGLE) {
+            if (clip_event_ota_in_progress()) {
+                goto notify;
+            }
+
+            if (current == CLIP_STATE_IDLE) {
+                if (!ble_is_connected() || !ble_is_file_data_notify_enabled()) {
+                    display_post_error("BLE Not Ready");
+                    goto notify;
+                }
+
+                if (battery_recording_allowed()) {
+                    /* Buzz before the audio thread powers up the mics. */
+                    haptic_play_pattern(HAPTIC_SHORT);
+                }
+                item.event = CLIP_EVENT_START;
+                item.start_rtc = true;
+            } else if ((current == CLIP_STATE_RECORDING || current == CLIP_STATE_PAUSED) &&
+                       rtc_stream_session_active()) {
+                item.event = CLIP_EVENT_STOP;
+            } else {
+                goto notify;
+            }
         }
 
         /* The START mode is carried by this queue item, so concurrent

@@ -185,9 +185,9 @@ UNINITIALIZED → IDLE → RECORDING → TRANSMITTING / WIFI_SYNC → IDLE. Also
 
 ### RTC Live Streaming (`rtc_stream.c`)
 
-**AT-only feature** (`AT+START=RTC`): the button's hold-release always starts the SD recording pipeline — a gesture that silently skips the SD card would be too easy to trigger accidentally.
+Start with `AT+START=RTC` or double-click the button while idle with BLE File Data notifications enabled. Double-click during the RTC session to stop. Hold-release starts SD recording.
 
-`AT+START=RTC` runs the mic pipeline without touching the SD card; encoded
+An RTC session runs the mic pipeline without touching the SD card; encoded
 Opus frames go to a bounded drop-oldest queue (`CONFIG_CLIP_RTC_QUEUE_FRAMES`
 × `CONFIG_CLIP_RTC_FRAME_MAX_BYTES`). `AT+DOWNLOAD=<session>` on the active
 RTC session **discards** whatever was queued before it (RTC delivers "now" —

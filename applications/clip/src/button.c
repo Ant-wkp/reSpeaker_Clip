@@ -104,8 +104,6 @@ static void button_event_callback(const struct device *dev, enum button_action a
 		/* Vibrate to confirm long-press threshold.
 		 * Actual start deferred to RELEASE so continuing to hold
 		 * can still enter the power-off flow without starting audio.
-		 * (Button recording is always the SD pipeline; RTC live
-		 * streaming is AT-only — AT+START=rtc.)
 		 */
 		haptic_play_pattern(HAPTIC_SHORT);
 	}
@@ -155,10 +153,7 @@ static void button_event_callback(const struct device *dev, enum button_action a
 	    }
 
 	    /* Hold-release = SD recording START (deferred from the 1 s
-	     * threshold so continuing to hold enters power-off instead).
-	     * RTC live streaming stays AT-only — a button gesture that
-	     * silently skips the SD card is too easy to trigger by
-	     * accident. */
+	     * threshold so continuing to hold enters power-off instead). */
 	    ret = clip_post_event(CLIP_EVENT_START);
 	    if (ret != 0) {
 		LOG_WRN("START event queue failed: %d", ret);
@@ -167,6 +162,7 @@ static void button_event_callback(const struct device *dev, enum button_action a
 	break;
 
     case BUTTON_DOUBLE_CLICK:
+        clip_post_event(CLIP_EVENT_RTC_TOGGLE);
         break;
 
     default:
