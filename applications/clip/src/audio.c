@@ -82,7 +82,7 @@ static bool recording_active = false;
  * (or skips) audio_start_recording_internal — the window where the state
  * machine says RECORDING but recording_active is still false and a STOP
  * must reach audio_stop_recording's pending-start path, not be gated out. */
-static bool start_pending;
+static atomic_t start_pending;
 static enum audio_mode current_mode = AUDIO_MODE_MERGE;
 static int opus_channels = 1;
 
@@ -97,6 +97,48 @@ static volatile bool stop_requested = false;
 
 /* Semaphore: audio thread signals when stop cleanup is done */
 static struct k_sem stop_done_sem;
+
+/* The control mutex serializes game start/stop across their acknowledgments. */
+static K_MUTEX_DEFINE(game_capture_lock);
+static K_SEM_DEFINE(game_capture_ready, 0, 1);
+static K_SEM_DEFINE(game_capture_done, 0, 1);
+static atomic_t game_capture_requested;
+static atomic_t game_jump_pending;
+static int game_capture_result;
+
+int audio_game_start(void)
+{
+    k_mutex_lock(&game_capture_lock, K_FOREVER);
+    if (atomic_get(&start_pending) || audio_is_recording()) {
+        k_mutex_unlock(&game_capture_lock);
+        return -EBUSY;
+    }
+    if (!atomic_get(&game_capture_requested)) {
+        k_sem_reset(&game_capture_done);
+        atomic_clear(&game_jump_pending);
+        atomic_set(&game_capture_requested, 1);
+        k_sem_give(&audio_start_sem);
+        k_sem_take(&game_capture_ready, K_FOREVER);
+    }
+    int result = game_capture_result;
+    k_mutex_unlock(&game_capture_lock);
+    return result;
+}
+
+void audio_game_stop(void)
+{
+    k_mutex_lock(&game_capture_lock, K_FOREVER);
+    if (atomic_clear(&game_capture_requested)) {
+        k_sem_take(&game_capture_done, K_FOREVER);
+    }
+    atomic_clear(&game_jump_pending);
+    k_mutex_unlock(&game_capture_lock);
+}
+
+bool audio_game_take_jump(void)
+{
+    return atomic_clear(&game_jump_pending) != 0;
+}
 
 /* Pause state */
 static volatile bool pause_requested = false;
@@ -282,7 +324,7 @@ static int audio_start_common(enum audio_mode mode, bool persists)
     /* Lock to protect session_id and state variables */
     k_mutex_lock(&audio_state_mutex, K_FOREVER);
 
-    if (recording_active) {
+    if (recording_active || atomic_get(&start_pending)) {
         k_mutex_unlock(&audio_state_mutex);
         LOG_WRN("Recording already active");
         return -EBUSY;
@@ -315,9 +357,9 @@ static int audio_start_common(enum audio_mode mode, bool persists)
     /* Reset counters */
     recording_frame_count = 0;
     stop_requested = false;
-    start_pending = true;
     k_sem_reset(&stop_done_sem);
 
+    atomic_set(&start_pending, 1);
     /* Wake up audio thread by giving semaphore */
     k_sem_give(&audio_start_sem);
     k_mutex_unlock(&audio_state_mutex);
@@ -506,7 +548,7 @@ bool audio_is_paused(void)
 bool audio_start_pending(void)
 {
     k_mutex_lock(&audio_state_mutex, K_FOREVER);
-    bool pending = start_pending;
+    bool pending = atomic_get(&start_pending) != 0;
     k_mutex_unlock(&audio_state_mutex);
 
     return pending;
@@ -721,6 +763,85 @@ static int audio_stop_recording_internal(void)
     return 0;
 }
 
+/* Read one channel from the existing stereo DMIC stream. Use scaled
+ * mean-square energy to keep the accumulator and thresholds integer-only. */
+static void audio_run_game_capture(void)
+{
+    int ret = mic_power_on();
+    if (ret == 0) {
+        k_sleep(K_MSEC(10));
+        ret = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
+    }
+    game_capture_result = ret;
+    if (ret < 0) {
+        mic_power_off();
+        atomic_clear(&game_capture_requested);
+        k_sem_give(&game_capture_ready);
+        return;
+    }
+    k_sem_give(&game_capture_ready);
+
+    uint32_t floor = 0;
+    int calibration_frames = 15;
+    int read_errors = 0;
+    bool armed = true;
+    while (atomic_get(&game_capture_requested)) {
+        void *buf;
+        uint32_t size;
+        ret = dmic_read(dmic_dev, 0, &buf, &size, AUDIO_FRAME_MS * 2);
+        if (ret != 0 || size != AUDIO_BLOCK_SIZE) {
+            if (ret == 0) {
+                k_mem_slab_free(&audio_mem_slab, buf);
+                ret = -EIO;
+            }
+            if (++read_errors >= 5) {
+                break;
+            }
+            continue;
+        }
+        read_errors = 0;
+        uint32_t sum = 0;
+        const int16_t *pcm = buf;
+        for (size_t i = 0; i + AUDIO_CHANNELS <= size / sizeof(*pcm); i += AUDIO_CHANNELS) {
+            int32_t sample = pcm[i] / 32;
+            sum += sample * sample;
+        }
+        k_mem_slab_free(&audio_mem_slab, buf);
+        uint32_t energy = sum / AUDIO_OPUS_FRAME_SIZE;
+        if (calibration_frames > 0) {
+            /* Ignore initial power-on transients when estimating the floor. */
+            if (calibration_frames < 13) {
+                floor += energy;
+            }
+            if (--calibration_frames == 0) {
+                floor = MIN(floor / 12, 256U);
+            }
+        } else if (energy <= MAX(100U, floor * 2U)) {
+            armed = true;
+        } else if (armed && energy >= MAX(256U, floor * 6U)) {
+            armed = false;
+            atomic_set(&game_jump_pending, 1);
+        }
+    }
+
+    dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
+    /* STOP is asynchronous in the nRF PDM driver. Allow the peripheral to
+     * release DMA buffers and drain any queued PCM before recording can start. */
+    k_sleep(K_MSEC(AUDIO_FRAME_MS));
+    void *stale;
+    uint32_t stale_size;
+    while (dmic_read(dmic_dev, 0, &stale, &stale_size, 0) == 0) {
+        k_mem_slab_free(&audio_mem_slab, stale);
+    }
+    mic_power_off();
+    bool failed = read_errors >= 5 && atomic_clear(&game_capture_requested);
+    k_sem_give(&game_capture_done);
+    if (failed) {
+        LOG_ERR("Game mic read: %d", ret);
+        display_post_error("Mic Error");
+    }
+}
+
 /* Audio recording thread */
 void audio_recording_thread(void *p1, void *p2, void *p3)
 {
@@ -738,17 +859,21 @@ void audio_recording_thread(void *p1, void *p2, void *p3)
     while (true) {
         /* Wait for start signal (blocks here) */
         k_sem_take(&audio_start_sem, K_FOREVER);
+        if (atomic_get(&game_capture_requested)) {
+            audio_run_game_capture();
+            continue;
+        }
 
         /* Check if stop was requested before we started */
         if (stop_requested) {
             stop_requested = false;
-            start_pending = false;   /* single-word store; we own it here */
+            atomic_clear(&start_pending);
             continue;
         }
 
         /* Perform initialization in audio thread context */
         ret = audio_start_recording_internal(current_mode);
-        start_pending = false;
+        atomic_clear(&start_pending);
         if (ret < 0) {
             LOG_ERR("Failed to start recording: %d", ret);
             continue;

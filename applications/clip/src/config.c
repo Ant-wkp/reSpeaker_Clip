@@ -681,7 +681,7 @@ int config_reformat_settings(void)
     LOG_WRN("settings heal: file system rebuilt");
 
     /* Re-save everything we own, from RAM. */
-    (void)config_save();                       /* config/* keys  */
+    (void)config_save();                       /* config subtree */
     (void)config_sync_time();                  /* time/unix_timestamp */
     if (g_serial_number[0] != '\0') {          /* sn/value (factory SN) */
         (void)settings_save_one(SETTING_SN, g_serial_number,

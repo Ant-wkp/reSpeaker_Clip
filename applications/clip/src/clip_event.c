@@ -141,6 +141,22 @@ struct k_sem event_notify_sem;
 static struct k_work_delayable ota_progress_work;
 /* Atomic: read cross-thread from the button callback's input gate. */
 static atomic_t ota_in_progress = ATOMIC_INIT(0);
+static atomic_t game_active;
+static K_MUTEX_DEFINE(game_mode_lock);
+
+bool clip_game_active(void)
+{
+    return atomic_get(&game_active) != 0;
+}
+
+void clip_game_exit(void)
+{
+    k_mutex_lock(&game_mode_lock, K_FOREVER);
+    if (atomic_clear(&game_active)) {
+        audio_game_stop();
+    }
+    k_mutex_unlock(&game_mode_lock);
+}
 
 bool clip_event_ota_in_progress(void)
 {
@@ -235,8 +251,12 @@ static enum clip_event_result execute_transition(enum clip_event event,
 #define SHUTDOWN_FAILSAFE_TIMEOUT_S 60
 static K_SEM_DEFINE(shutdown_failsafe_sem, 0, 1);
 
-static void shutdown_failsafe_thread_fn(void)
+static void shutdown_failsafe_thread_fn(void *p1, void *p2, void *p3)
 {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
 	const struct device *regulators =
 		DEVICE_DT_GET(DT_NODELABEL(npm1300_regulators));
 
@@ -660,7 +680,9 @@ void clip_event_process(void)
             goto notify;
         }
 
-        uint8_t next = transition_table[current][item.event];
+        uint8_t next = item.event >= CLIP_EVENT_GAME_TOGGLE
+                     ? (current == CLIP_STATE_IDLE ? TRANS_SAME : TRANS_INVALID)
+                     : transition_table[current][item.event];
         if (next == TRANS_INVALID) {
             LOG_WRN("Invalid transition: state=%d event=%d", current, item.event);
             if (item.result) {
@@ -717,6 +739,7 @@ static void shutdown_thread_fn(void)
 
         /* Ignore all button input from here on. */
         button_shutdown_lockout();
+        clip_game_exit();
 
         /* Confirmation buzz plays on the haptic thread WHILE we clean up. */
         haptic_play_pattern(HAPTIC_DOUBLE);
@@ -824,8 +847,49 @@ static enum clip_event_result execute_transition(enum clip_event event,
     int err;
 
     switch (event) {
+    case CLIP_EVENT_GAME_EXIT:
+        clip_game_exit();
+        display_post_event(UI_EVENT_GAME_EXIT);
+        return CLIP_EVENT_OK;
+
+    case CLIP_EVENT_GAME_TOGGLE:
+        if (clip_game_active()) {
+            clip_game_exit();
+            display_post_event(UI_EVENT_GAME_EXIT);
+            return CLIP_EVENT_OK;
+        }
+        /* Fall through to the same capture setup used on restart. */
+        __attribute__((fallthrough));
+    case CLIP_EVENT_GAME_RESTART:
+        if (event == CLIP_EVENT_GAME_RESTART && !clip_game_active()) {
+            return CLIP_EVENT_INVALID;
+        }
+        if (display_game_ready() && !clip_event_ota_in_progress() &&
+                   !audio_is_recording() && !transfer_is_active() &&
+                   !wifi_ap_is_running() && !usb_cdc_is_enabled() &&
+                   (clip_get_context()->status.battery_percent > 15 ||
+                    clip_get_context()->status.battery_charging)) {
+            k_mutex_lock(&game_mode_lock, K_FOREVER);
+            if (audio_game_start() != 0) {
+                atomic_clear(&game_active);
+                display_post_error("Mic Error");
+            } else {
+                atomic_set(&game_active, 1);
+                if (display_post_event(UI_EVENT_GAME_START) != 0) {
+                    atomic_clear(&game_active);
+                    audio_game_stop();
+                }
+            }
+            k_mutex_unlock(&game_mode_lock);
+        }
+        return CLIP_EVENT_OK;
+
     case CLIP_EVENT_START:
     {
+        if (clip_game_active()) {
+            clip_game_exit();
+            display_post_event(UI_EVENT_GAME_EXIT);
+        }
         struct clip_context *ctx = clip_get_context();
 
         /* Critical-battery lockout: a graceful STOP already ran at 3%;
@@ -1026,6 +1090,10 @@ static enum clip_event_result execute_transition(enum clip_event event,
 
     case CLIP_EVENT_WIFI_ON:
     {
+        if (clip_game_active()) {
+            clip_game_exit();
+            display_post_event(UI_EVENT_GAME_EXIT);
+        }
         /* Refuse to start the AP on a low cell unless charging/VBUS. The
          * AT layer checks this first for a specific message; this guard
          * covers any other future caller. An already-running AP is left
@@ -1092,6 +1160,7 @@ static enum clip_event_result execute_transition(enum clip_event event,
 
     case CLIP_EVENT_POWER_OFF_SHOW:
     {
+        clip_game_exit();
         /* A held-long-enough press triggers a PMIC hardware reset that
          * bypasses the software POWER_OFF_EXEC shutdown (where the fuel-gauge
          * state is normally persisted). Queue a save now, at the 3 s poweroff
@@ -1130,6 +1199,7 @@ static enum clip_event_result execute_transition(enum clip_event event,
 
     case CLIP_EVENT_OTA_START:
     {
+        clip_game_exit();
         display_post_event(UI_EVENT_OTA_START);
         return CLIP_EVENT_OK;
     }

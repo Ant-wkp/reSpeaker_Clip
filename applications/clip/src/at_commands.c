@@ -50,6 +50,7 @@ static bool log_fs_debug;  /* backend filter level is DBG (AT+LOG=debug) */
 
 static void reboot_work_handler(struct k_work *work)
 {
+    clip_game_exit();
     /* Stop recording if active before rebooting */
     if (audio_is_recording()) {
         audio_stop_recording();
@@ -1743,6 +1744,10 @@ static int cmd_download_handler(struct at_cmd_ctx *ctx, char *response, size_t l
         return create_json_response(false, "Transport not available", NULL, response, len);
     }
 
+    if (clip_game_active() && clip_post_event_sync(CLIP_EVENT_GAME_EXIT, NULL) != 0) {
+        return create_json_response(false, "Busy", NULL, response, len);
+    }
+
     /* Start transfer using the transport that received the command */
     int err;
     if (filename) {
@@ -2325,6 +2330,9 @@ static int cmd_usb_handler(struct at_cmd_ctx *ctx, char *response, size_t len)
 	}
 
 	if (strcmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
+	    if (clip_game_active() && clip_post_event_sync(CLIP_EVENT_GAME_EXIT, NULL) != 0) {
+	        return create_json_response(false, "Busy", NULL, response, len);
+	    }
 	    int err = usb_cdc_enable();
 	    if (err == -EBUSY) {
 		const char *reason = "Busy";
